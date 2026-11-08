@@ -231,8 +231,16 @@
             if (!text) return;                   // 空内容不添加
 
             inputEl.value = '';                  // 清空输入框
+            syncAddBtn();
             commit(addTodo(todos, text));        // 改数据 + 存盘 + 渲染
         });
+
+        /* 输入框为空时禁用「添加」按钮，有内容才可点 */
+        function syncAddBtn() {
+            addBtn.disabled = inputEl.value.trim() === '';
+        }
+        inputEl.addEventListener('input', syncAddBtn);  // 每次输入都重新判断
+        syncAddBtn();
 
         // 回车也能提交
         inputEl.addEventListener('keydown', (e) => {
