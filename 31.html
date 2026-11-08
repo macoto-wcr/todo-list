@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>待办清单</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+            max-width: 420px;
+            margin: 40px auto;
+            padding: 0 16px;
+            color: #333;
+        }
+
+        h2 {
+            font-size: 15px;
+            color: #666;
+            border-left: 3px solid #4a90d9;
+            padding-left: 8px;
+            margin-top: 32px;
+        }
+
+        button {
+            box-sizing: border-box;
+            height: 32px;
+            padding: 0 14px;
+            font-size: 14px;
+            white-space: nowrap;   /* 按钮文字永不换行 */
+            cursor: pointer;
+            border: 1px solid #bbb;
+            border-radius: 4px;
+            background: #fff;
+        }
+
+        button:hover {
+            background: #f3f3f3;
+        }
+
+        button:disabled {
+            opacity: .5;
+            cursor: not-allowed;
+        }
+
+        /* ===== 待办清单 ===== */
+        .input-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        #input {
+            box-sizing: border-box;
+            height: 32px;
+            flex: 1;
+            padding: 0 10px;
+            font-size: 14px;
+            border: 1px solid #bbb;
+            border-radius: 4px;
+            outline: none;
+        }
+
+        #input:focus {
+            border-color: #4a90d9;
+        }
+
+        #list {
+            padding-left: 22px;
+        }
+
+        #list li {
+            margin: 8px 0;
+            height: 32px;          /* 固定高度：普通态和编辑态都一样，切换不跳 */
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* 复选框：不参与压缩 */
+        #list li .toggle {
+            flex-shrink: 0;
+            width: 16px;
+            height: 16px;
+            margin: 0;
+            cursor: pointer;
+            accent-color: #4a90d9;   /* 勾选后的颜色 */
+        }
+
+        /* 文字区域：超出宽度就显示省略号，绝不把按钮挤走 */
+        #list li > span {
+            flex: 1;
+            min-width: 0;            /* 关键：允许收缩到比文字内容还窄 */
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
+        /* 完成的待办：只把文字划掉、变灰，删除按钮不动 */
+        .done span {
+            text-decoration: line-through;
+            color: #999;
+        }
+
+        .del {
+            font-size: 12px;
+            color: #d9534f;
+            border-color: #e8b4b2;
+        }
+
+        /* ===== 编辑 ===== */
+        .actions {
+            display: flex;
+            flex-shrink: 0;        /* 按钮组不压缩 */
+            gap: 6px;
+        }
+
+        .edit-input {
+            box-sizing: border-box;
+            height: 32px;          /* 与按钮、普通行一致 */
+            flex: 1;
+            min-width: 0;          /* 同样允许收缩 */
+            padding: 0 10px;
+            font-size: 14px;
+            border: 1px solid #4a90d9;
+            border-radius: 4px;
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+    <h2>待办清单</h2>
+    <div class="input-row">
+        <input id="input" placeholder="输入待办，回车或点添加">
+        <button id="add-btn">添加</button>
+    </div>
+    <!-- 列表容器：渲染出来的 li 会塞进这里 -->
+    <ul id="list"></ul>
+
+    <script>
+        // localStorage 里用的「抽屉名」，存和取必须用同一个
+        const STORAGE_KEY = 'todos';
+
+        // 从 localStorage 读回来：字符串 → 真数组
+        // 从没存过、或者存的数据坏了，就返回 null，交给下面的 ?? 用默认数据
+        function loadTodos() {
+            try {
+                return JSON.parse(localStorage.getItem(STORAGE_KEY)) ?? null;
+            } catch {
+                return null;
+            }
+        }
+
+        // 默认数据：API 请求失败时的兜底
+        const defaultTodos = [
+            { id: 1, text: '学 ES6',     done: false },
+            { id: 2, text: '写待办清单', done: true  },
+        ];
+
+        // 先把本地存的数据读出来：可能是数组，也可能是 null（从没存过）
+        const saved = loadTodos();
+
+        // 数据源：所有待办都在这一个数组里
+        // 必须是 let —— 每次增删改都是生成新数组再赋值回来
+        // 先给空数组，等 init() 决定填本地数据、API 数据还是默认数据
+        let todos = saved ?? [];
+
+        const listEl  = document.querySelector('#list');
+        const inputEl = document.querySelector('#input');
+        const addBtn  = document.querySelector('#add-btn');
+
+        // 哪个待办正在编辑：存它的 id，没有就是 null
+        // 这是一个「界面状态」，不属于待办数据，所以不进 todos、也不存 localStorage
+        let editingId = null;
+
+        /* ---------- 纯函数：只返回新数组，不修改原数组 ---------- */
+
+        // 数据 → HTML 字符串（解构 + 模板字符串 + map + join）
+        // 第二个参数 editing 告诉它「哪一条正在编辑」
+        const renderItemList = (list, editing) => list.map(({ id, text, done }) => `
+            <li data-id="${id}" class="${done ? 'done' : ''}">
+                <input type="checkbox" class="toggle" ${done ? 'checked' : ''}>
+                ${id === editing
+                    ? `<input class="edit-input" value="${text}">
+                       <div class="actions">
+                           <button class="del">删除</button>
+                       </div>`
+                    : `<span>${text}</span>
+                       <div class="actions">
+                           <button class="edit">编辑</button>
+                           <button class="del">删除</button>
+                       </div>`}
+            </li>
+        `).join('');
+
+        // 新增一项（展开：旧元素全部摊开，后面追加一个新对象）
+        const addTodo = (list, text) =>
+            [...list, { id: Date.now(), text, done: false }];
+
+        // 切换完成状态（展开：复制这一项，只翻转 done）
+        const toggleTodo = (list, id) =>
+            list.map(item => item.id === id ? { ...item, done: !item.done } : item);
+
+        // 删除一项（filter：只留下 id 不同的那些）
+        const deleteTodo = (list, id) =>
+            list.filter(item => item.id !== id);
+
+        // 修改文字（展开：复制这一项，只替换 text）
+        const editTodo = (list, id, text) =>
+            list.map(item => item.id === id ? { ...item, text } : item);
+
+        // 把最新的 todos 渲染到页面
+        const render = () => {
+            listEl.innerHTML = renderItemList(todos, editingId);
+        };
+
+        // 存盘：数组 → JSON 字符串 → 放进去 localStorage 的 todos 抽屉
+        function save() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+        }
+
+        // 数据变更的唯一出口：换数据 → 存盘 → 重画
+        // 以后每个事件里只要 commit(新数组)，就不会漏掉存盘
+        function commit(nextTodos) {
+            todos = nextTodos;
+            save();
+            render();
+        }
+
+        /* ---------- ① 添加 ---------- */
+        addBtn.addEventListener('click', () => {
+            const text = inputEl.value.trim();   // 去掉首尾空格
+            if (!text) return;                   // 空内容不添加
+
+            inputEl.value = '';                  // 清空输入框
+            commit(addTodo(todos, text));        // 改数据 + 存盘 + 渲染
+        });
+
+        // 回车也能提交
+        inputEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') addBtn.click();
+        });
+
+        /* ---------- ② 删除 / ③ 切换状态 / ④ 进入编辑（事件委托） ---------- */
+        // 只在父元素 ul 上绑一个监听器，所有 li（包括以后新增的）都能响应
+        listEl.addEventListener('click', (e) => {
+            const li = e.target.closest('li');    // 点到的元素属于哪个 li？
+            if (!li) return;                      // 点在空白处，忽略
+
+            const id = Number(li.dataset.id);     // data-id 读出来是字符串，转成数字
+
+            if (e.target.classList.contains('del')) {
+                commit(deleteTodo(todos, id));    // 点的是「删除」按钮
+            } else if (e.target.classList.contains('edit')) {
+                editingId = id;                   // 点的是「编辑」按钮 → 记下 id
+                render();                         // 重画，这一条会变成输入框
+
+                const editInput = listEl.querySelector('.edit-input');
+                if (editInput) {
+                    editInput.focus();            // 光标进输入框
+                    // 默认光标在开头，手动移到文字末尾
+                    const end = editInput.value.length;
+                    editInput.setSelectionRange(end, end);
+                }
+            } else if (e.target.classList.contains('edit-input')) {
+                return;                           // 点输入框本身，什么也不做
+            } else if (e.target.classList.contains('toggle')) {
+                commit(toggleTodo(todos, id));    // 点复选框 → 切换完成状态
+            }
+            // 点文字或空白区域：什么也不做
+        });
+
+        /* ---------- ⑤ 编辑框里的键盘操作 ---------- */
+        listEl.addEventListener('keydown', (e) => {
+            if (!e.target.classList.contains('edit-input')) return;
+
+            const id = Number(e.target.closest('li').dataset.id);
+            const text = e.target.value.trim();
+
+            if (e.key === 'Enter') {
+                editingId = null;                 // 退出编辑状态
+                if (text) {
+                    commit(editTodo(todos, id, text));   // 提交新文字
+                } else {
+                    render();                     // 内容为空 → 当取消处理
+                }
+            } else if (e.key === 'Escape') {
+                editingId = null;                 // 不改数据，直接退出编辑
+                render();
+            }
+        });
+
+        /* ---------- ⑥ 从 API 拉初始数据 ---------- */
+        // async 函数里可以用 await：先等结果，再往下走
+        async function fetchTodos() {
+            const res = await fetch('https://jsonplaceholder.typicode.com/todos?_limit=5');
+
+            // fetch 只有在「网络断了」时才报错；404、500 也算「请求成功」
+            // 所以必须自己检查状态码
+            if (!res.ok) throw new Error(`请求失败：${res.status}`);
+
+            const data = await res.json();
+
+            // 把 API 的字段名翻译成我们自己的格式
+            // API 给的是 { id, title, completed }，我们要 { id, text, done }
+            return data.map(({ id, title, completed }) => ({
+                id,
+                text: title,
+                done: completed,
+            }));
+        }
+
+        // 启动流程：本地有数据就直接用；没有才去 API 拉
+        async function init() {
+            if (saved) {
+                // 注意：[] 也算「有数据」——用户把待办删光了，不该再拉一遍
+                render();
+                return;
+            }
+
+            listEl.textContent = '加载中…';
+            addBtn.disabled = true;      // 加载期间先别让用户添加
+
+            try {
+                commit(await fetchTodos());   // 成功 → 存盘 + 渲染
+            } catch (err) {
+                console.warn('拉取失败，改用默认数据', err);
+                commit(defaultTodos);         // 失败 → 用默认数据兜底
+            }
+
+            addBtn.disabled = false;
+        }
+
+        init();
+    </script>
+</body>
+</html>
